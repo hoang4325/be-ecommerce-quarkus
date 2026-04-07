@@ -7,7 +7,10 @@ import com.ecommerce.common.exception.ResourceNotFoundException;
 import com.ecommerce.inventory.dto.CreateInventoryRequest;
 import com.ecommerce.inventory.dto.InventoryDTO;
 import com.ecommerce.inventory.entity.Inventory;
+import com.ecommerce.inventory.entity.StockReservation;
 import com.ecommerce.inventory.repository.InventoryRepository;
+import com.ecommerce.inventory.repository.StockReservationRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -22,6 +25,8 @@ public class InventoryService {
     private static final Logger LOG = Logger.getLogger(InventoryService.class);
 
     @Inject InventoryRepository inventoryRepository;
+    @Inject StockReservationRepository stockReservationRepository;
+    @Inject MeterRegistry meterRegistry;
 
     public List<InventoryDTO> findAll() {
         return inventoryRepository.listAll().stream().map(this::toDTO).toList();
@@ -59,46 +64,90 @@ public class InventoryService {
 
     /**
      * Try to reserve stock for all items in an order.
-     * Returns a StockReservedEvent indicating success or failure.
+     * Saves StockReservation records for each item (used for compensation).
      */
     @Transactional
     public StockReservedEvent reserveStock(OrderCreatedEvent event) {
+        // Phase 1: Validate all items
         for (OrderCreatedEvent.OrderItemEvent item : event.getItems()) {
             var optInv = inventoryRepository.findByProductId(item.getProductId());
             if (optInv.isEmpty()) {
                 LOG.warnf("No inventory for product %s — order %s rejected", item.getProductId(), event.getOrderId());
+                meterRegistry.counter("stock.reservation.failed", "reason", "not_found").increment();
                 return StockReservedEvent.builder()
                         .orderId(event.getOrderId())
                         .userId(event.getUserId())
                         .success(false)
                         .reason("Product " + item.getProductName() + " not found in inventory")
+                        .totalAmount(event.getTotalAmount())
                         .build();
             }
             Inventory inv = optInv.get();
             if (inv.getAvailable() < item.getQuantity()) {
                 LOG.warnf("Insufficient stock for %s (%d available, %d requested) — order %s",
                         item.getProductName(), inv.getAvailable(), item.getQuantity(), event.getOrderId());
+                meterRegistry.counter("stock.reservation.failed", "reason", "insufficient").increment();
                 return StockReservedEvent.builder()
                         .orderId(event.getOrderId())
                         .userId(event.getUserId())
                         .success(false)
                         .reason("Insufficient stock for " + item.getProductName())
+                        .totalAmount(event.getTotalAmount())
                         .build();
             }
         }
 
-        // All checks passed — reserve
+        // Phase 2: Reserve + track
         for (OrderCreatedEvent.OrderItemEvent item : event.getItems()) {
             Inventory inv = inventoryRepository.findByProductId(item.getProductId()).get();
             inv.setReservedQuantity(inv.getReservedQuantity() + item.getQuantity());
+
+            // Save reservation record for compensation
+            stockReservationRepository.persist(
+                    new StockReservation(event.getOrderId(), item.getProductId(), item.getQuantity()));
         }
 
-        LOG.infof("Stock reserved for order %s", event.getOrderId());
+        LOG.infof("Stock reserved for order %s (%d items)", event.getOrderId(), event.getItems().size());
+        meterRegistry.counter("stock.reserved").increment();
         return StockReservedEvent.builder()
                 .orderId(event.getOrderId())
                 .userId(event.getUserId())
                 .success(true)
+                .totalAmount(event.getTotalAmount())
                 .build();
+    }
+
+    /**
+     * Compensation: release reserved stock when order is cancelled.
+     */
+    @Transactional
+    public void releaseReservedStock(UUID orderId) {
+        List<StockReservation> reservations = stockReservationRepository.findByOrderIdAndStatus(orderId, "RESERVED");
+        for (StockReservation res : reservations) {
+            inventoryRepository.findByProductId(res.getProductId()).ifPresent(inv -> {
+                inv.setReservedQuantity(Math.max(0, inv.getReservedQuantity() - res.getQuantity()));
+                LOG.infof("Released %d units of %s for cancelled order %s",
+                        res.getQuantity(), inv.getProductName(), orderId);
+            });
+            res.setStatus("RELEASED");
+        }
+    }
+
+    /**
+     * Confirm reservations when order is confirmed (optional audit).
+     */
+    @Transactional
+    public void confirmReservation(UUID orderId) {
+        List<StockReservation> reservations = stockReservationRepository.findByOrderIdAndStatus(orderId, "RESERVED");
+        for (StockReservation res : reservations) {
+            // Deduct from actual quantity, release reserved
+            inventoryRepository.findByProductId(res.getProductId()).ifPresent(inv -> {
+                inv.setQuantity(inv.getQuantity() - res.getQuantity());
+                inv.setReservedQuantity(Math.max(0, inv.getReservedQuantity() - res.getQuantity()));
+            });
+            res.setStatus("CONFIRMED");
+        }
+        LOG.infof("Reservations confirmed for order %s", orderId);
     }
 
     private InventoryDTO toDTO(Inventory inv) {
