@@ -1,5 +1,6 @@
 package com.ecommerce.order.entity;
 
+import com.ecommerce.common.exception.BusinessException;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -39,6 +40,9 @@ public class Order extends PanacheEntityBase {
     @Column(name = "shipping_address", nullable = false, columnDefinition = "TEXT")
     private String shippingAddress;
 
+    @Column(name = "cancellation_reason")
+    private String cancellationReason;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     private List<OrderItem> items = new ArrayList<>();
 
@@ -49,4 +53,16 @@ public class Order extends PanacheEntityBase {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /**
+     * State machine guarded transition.
+     * Throws BusinessException if the transition is illegal.
+     */
+    public void transitionTo(OrderStatus next) {
+        if (!this.status.canTransitionTo(next)) {
+            throw new BusinessException(
+                    String.format("Invalid order transition: %s → %s (order %s)", this.status, next, this.id));
+        }
+        this.status = next;
+    }
 }

@@ -9,6 +9,7 @@ import com.ecommerce.common.exception.ResourceNotFoundException;
 import com.ecommerce.order.client.CartServiceClient;
 import com.ecommerce.order.dto.CreateOrderRequest;
 import com.ecommerce.order.dto.OrderDTO;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import com.ecommerce.order.entity.Order;
 import com.ecommerce.order.entity.OrderItem;
@@ -35,6 +36,7 @@ public class OrderService {
 
     @Inject OrderRepository orderRepository;
     @Inject OrderMapper orderMapper;
+    @Inject MeterRegistry meterRegistry;
     @RestClient CartServiceClient cartServiceClient;
 
     @Channel("order-created-out")
@@ -134,6 +136,7 @@ public class OrderService {
                 .build();
         orderCreatedEmitter.send(event);
         LOG.infof("Produced order-created event for order %s", order.getId());
+        meterRegistry.counter("orders.created").increment();
 
         return orderMapper.toDTO(order);
     }
@@ -148,16 +151,13 @@ public class OrderService {
             if (!order.getUserId().equals(userId)) {
                 throw new BusinessException("Order does not belong to current user", 403);
             }
-            if (order.getStatus() != OrderStatus.PENDING) {
-                throw new BusinessException("Only PENDING orders can be cancelled");
-            }
-            order.setStatus(OrderStatus.CANCELLED);
+            order.transitionTo(OrderStatus.CANCELLED); // state machine guard
+            order.setCancellationReason("Cancelled by user");
             LOG.infof("Order %s cancelled by user %s", orderId, userId);
-            
+
             dtoHolder[0] = orderMapper.toDTO(order);
         });
 
-        // Produce order-confirmed (cancelled) event outside the JTA transaction
         orderConfirmedEmitter.send(OrderConfirmedEvent.builder()
                 .orderId(orderId).userId(userId).status("CANCELLED").reason("Cancelled by user").build());
 
@@ -183,12 +183,13 @@ public class OrderService {
         QuarkusTransaction.requiringNew().run(() -> {
             orderRepository.findByIdOptional(orderId).ifPresent(order -> {
                 if (paymentSuccess) {
-                    order.setStatus(OrderStatus.CONFIRMED);
+                    order.transitionTo(OrderStatus.CONFIRMED);
                     LOG.infof("Order %s CONFIRMED after successful payment", orderId);
                     eventHolder[0] = OrderConfirmedEvent.builder()
                             .orderId(orderId).userId(order.getUserId()).status("CONFIRMED").build();
                 } else {
-                    order.setStatus(OrderStatus.CANCELLED);
+                    order.transitionTo(OrderStatus.CANCELLED);
+                    order.setCancellationReason(reason);
                     LOG.warnf("Order %s CANCELLED due to payment failure: %s", orderId, reason);
                     eventHolder[0] = OrderConfirmedEvent.builder()
                             .orderId(orderId).userId(order.getUserId()).status("CANCELLED").reason(reason).build();
@@ -198,6 +199,25 @@ public class OrderService {
 
         if (eventHolder[0] != null) {
             orderConfirmedEmitter.send(eventHolder[0]);
+            meterRegistry.counter("orders.completed", "status",
+                    paymentSuccess ? "CONFIRMED" : "CANCELLED").increment();
+        }
+    }
+
+    /**
+     * Called by StockReservedConsumer when inventory confirms stock reservation.
+     */
+    public void handleStockReserved(UUID orderId, boolean success, String reason) {
+        if (success) {
+            QuarkusTransaction.requiringNew().run(() -> {
+                orderRepository.findByIdOptional(orderId).ifPresent(order -> {
+                    order.transitionTo(OrderStatus.STOCK_RESERVED);
+                    LOG.infof("Order %s → STOCK_RESERVED", orderId);
+                });
+            });
+        } else {
+            // Stock failed → cancel order immediately (no compensation needed)
+            handlePaymentResult(orderId, false, "Stock reservation failed: " + reason);
         }
     }
 }
