@@ -33,10 +33,10 @@ public class StockReservedConsumer {
     public void onStockReserved(StockReservedEvent event) {
         LOG.infof("Received stock-reserved event for order %s (success=%s)", event.getOrderId(), event.isSuccess());
 
-        // Mock amount — in real app, fetch from order-service or event payload
-        BigDecimal mockAmount = new BigDecimal("99.99");
+        // Use real totalAmount forwarded from OrderCreatedEvent
+        BigDecimal amount = event.getTotalAmount() != null ? event.getTotalAmount() : BigDecimal.ZERO;
 
-        PaymentProcessedEvent result = paymentService.processPayment(event, mockAmount);
+        PaymentProcessedEvent result = paymentService.processPayment(event, amount);
         paymentEmitter.send(result);
 
         LOG.infof("Produced payment-processed event for order %s (success=%s)", result.getOrderId(), result.isSuccess());

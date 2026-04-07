@@ -4,6 +4,7 @@ import com.ecommerce.common.event.PaymentProcessedEvent;
 import com.ecommerce.common.event.StockReservedEvent;
 import com.ecommerce.payment.entity.Payment;
 import com.ecommerce.payment.repository.PaymentRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -23,6 +24,7 @@ public class PaymentService {
     private static final Logger LOG = Logger.getLogger(PaymentService.class);
 
     @Inject PaymentRepository paymentRepository;
+    @Inject MeterRegistry meterRegistry;
 
     @Transactional
     public PaymentProcessedEvent processPayment(StockReservedEvent event, BigDecimal amount) {
@@ -49,6 +51,7 @@ public class PaymentService {
         paymentRepository.persist(payment);
 
         LOG.infof("Payment processed for order %s: txn=%s, amount=%s", event.getOrderId(), txnId, amount);
+        meterRegistry.counter("payments.processed", "status", "SUCCESS").increment();
 
         return PaymentProcessedEvent.builder()
                 .orderId(event.getOrderId())
