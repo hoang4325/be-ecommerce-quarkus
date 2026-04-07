@@ -10,6 +10,7 @@ import com.ecommerce.cart.entity.CartStatus;
 import com.ecommerce.cart.mapper.CartMapper;
 import com.ecommerce.cart.repository.CartItemRepository;
 import com.ecommerce.cart.repository.CartRepository;
+import com.ecommerce.common.dto.ApiResponse;
 import com.ecommerce.common.exception.BusinessException;
 import com.ecommerce.common.exception.ResourceNotFoundException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -44,11 +45,11 @@ public class CartService {
     @Transactional
     public CartDTO addItem(UUID userId, AddCartItemRequest request) {
         // Validate product via product-service
-        var productResponse = productServiceClient.getProduct(request.getProductId());
-        if (productResponse == null || productResponse.data() == null) {
+        ApiResponse<ProductServiceClient.ProductInfo> productResponse = productServiceClient.getProduct(request.getProductId());
+        if (productResponse == null || productResponse.getData() == null) {
             throw new ResourceNotFoundException("Product", "id", request.getProductId());
         }
-        var product = productResponse.data();
+        ProductServiceClient.ProductInfo product = productResponse.getData();
         if (!product.active()) {
             throw new BusinessException("Product '" + product.name() + "' is not available");
         }

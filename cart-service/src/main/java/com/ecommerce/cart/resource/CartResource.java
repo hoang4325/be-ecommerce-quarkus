@@ -5,7 +5,7 @@ import com.ecommerce.cart.dto.CartDTO;
 import com.ecommerce.cart.dto.UpdateCartItemRequest;
 import com.ecommerce.cart.service.CartService;
 import com.ecommerce.common.dto.ApiResponse;
-import io.quarkus.security.identity.SecurityIdentity;
+
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
@@ -26,10 +26,10 @@ import java.util.UUID;
 public class CartResource {
 
     @Inject CartService cartService;
-    @Inject SecurityIdentity identity;
+    @Inject org.eclipse.microprofile.jwt.JsonWebToken jwt;
 
     private UUID currentUserId() {
-        return UUID.fromString(identity.getPrincipal().getName());
+        return UUID.fromString(jwt.getSubject());
     }
 
     @GET
