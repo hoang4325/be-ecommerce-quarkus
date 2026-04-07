@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -20,5 +21,6 @@ public class StockReservedEvent {
     private UUID orderId;
     private UUID userId;
     private boolean success;
-    private String reason; // null if success, failure reason otherwise
+    private String reason;             // null if success, failure reason otherwise
+    private BigDecimal totalAmount;    // forwarded from OrderCreatedEvent for payment
 }

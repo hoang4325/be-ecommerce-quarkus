@@ -9,7 +9,7 @@ import jakarta.ws.rs.ext.ExceptionMapper;
 import jakarta.ws.rs.ext.Provider;
 import org.jboss.logging.Logger;
 
-import java.util.stream.Collectors;
+import java.util.List;
 
 /**
  * Global exception handler — maps all known exceptions to consistent ApiResponse format.
@@ -26,34 +26,42 @@ public class GlobalExceptionHandler implements ExceptionMapper<Throwable> {
 
         if (exception instanceof ResourceNotFoundException ex) {
             return Response.status(Response.Status.NOT_FOUND)
-                    .entity(ApiResponse.error(ex.getMessage()))
+                    .entity(ApiResponse.error("NOT_FOUND", ex.getMessage()))
                     .build();
         }
 
         if (exception instanceof BusinessException ex) {
             return Response.status(ex.getStatusCode())
-                    .entity(ApiResponse.error(ex.getMessage()))
+                    .entity(ApiResponse.error("BUSINESS_ERROR", ex.getMessage()))
                     .build();
         }
 
         if (exception instanceof ConstraintViolationException ex) {
-            String message = ex.getConstraintViolations().stream()
-                    .map(ConstraintViolation::getMessage)
-                    .collect(Collectors.joining(", "));
+            List<ApiResponse.FieldError> fieldErrors = ex.getConstraintViolations().stream()
+                    .map(cv -> new ApiResponse.FieldError(
+                            getFieldName(cv), cv.getMessage()))
+                    .toList();
             return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(ApiResponse.error("Validation failed: " + message))
+                    .entity(ApiResponse.validationError(fieldErrors))
                     .build();
         }
 
         if (exception instanceof WebApplicationException ex) {
             return Response.status(ex.getResponse().getStatus())
-                    .entity(ApiResponse.error(ex.getMessage()))
+                    .entity(ApiResponse.error("HTTP_ERROR", ex.getMessage()))
                     .build();
         }
 
         LOG.errorf(exception, "Unhandled exception: %s", exception.getMessage());
         return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                .entity(ApiResponse.error("An unexpected error occurred"))
+                .entity(ApiResponse.error("INTERNAL_ERROR", "An unexpected error occurred"))
                 .build();
+    }
+
+    private String getFieldName(ConstraintViolation<?> cv) {
+        String path = cv.getPropertyPath().toString();
+        // Extract last segment: "createOrder.arg0.shippingAddress" → "shippingAddress"
+        int lastDot = path.lastIndexOf('.');
+        return lastDot >= 0 ? path.substring(lastDot + 1) : path;
     }
 }
